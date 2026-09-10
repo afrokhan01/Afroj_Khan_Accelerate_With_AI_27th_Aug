@@ -1,0 +1,11 @@
+store_id,store_name,region,city,state
+S01,Downtown Flagship,Northeast,New York,NY
+S02,Back Bay Boutique,Northeast,Boston,MA
+S03,Liberty Square,Northeast,Philadelphia,PA
+S04,Peachtree Plaza,Southeast,Atlanta,GA
+S05,South Beach Outlet,Southeast,Miami,FL
+S06,Queen City Mall,Southeast,Charlotte,NC
+S07,Loop Center,Midwest,Chicago,IL
+S08,Motor City Store,Midwest,Detroit,MI
+S09,Sunset Strip,West,Los Angeles,CA
+S10,Bay Area Hub,West,San Francisco,CA

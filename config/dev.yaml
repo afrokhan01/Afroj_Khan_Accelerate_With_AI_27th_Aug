@@ -1,0 +1,12 @@
+approval:
+  auto_approve: true
+  confidence_threshold: 0.75
+
+rules:
+  discount_max: 1.0
+  min_quantity: 1
+  drop_rows_missing_keys: true
+  required_keys:
+    - order_date
+    - store_id
+    - product_id

@@ -1,0 +1,40 @@
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment folders
+venv/
+.venv/
+env/
+
+# Environment files with secrets
+.env
+
+# IDE settings
+.vscode/
+.idea/
+
+# Generated data files (keep landing/ tracked)
+data/**
+!data/landing/
+!data/landing/**
+!data/.gitkeep
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Chroma vector database files
+.chroma/
+
+# Generated reports and audit logs
+audit_logs/
+reports/
+
+# Test/build artifacts
+.pytest_cache/
+*.egg-info/
+
+# OS files
+.DS_Store
+Thumbs.db
