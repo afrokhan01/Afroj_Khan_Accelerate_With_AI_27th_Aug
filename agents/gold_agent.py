@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,24 +31,96 @@ def _inspect_silver(silver_paths: list[str], sttm_path: str) -> dict:
 
 
 def _apply_gold_rules(silver_paths: list[str], sttm_path: str, run_id: str) -> list[str]:
+    def _norm(value: object) -> str:
+        return str(value).strip().upper() if pd.notna(value) else ""
+
+    def _extract_logic_col(logic: str) -> str:
+        match = re.search(r"\(([^)]+)\)", logic or "")
+        return match.group(1).strip() if match else ""
+
+    def _build_sttm_plan(frame: pd.DataFrame, file_rules: pd.DataFrame) -> tuple[list[str], list[tuple[str, str, str]]]:
+        group_cols: list[str] = []
+        agg_specs: list[tuple[str, str, str]] = []
+
+        agg_map = {"SUM": "sum", "COUNT": "count", "AVG": "mean", "MEAN": "mean"}
+        if file_rules.empty:
+            return group_cols, agg_specs
+
+        for _, row in file_rules.iterrows():
+            transformation_type = _norm(row.get("transformation_type"))
+            transformation_logic = str(row.get("transformation_logic", "") or "").strip()
+            source_col = str(row.get("source_column", "") or "").strip()
+            target_col = str(row.get("target_column", "") or "").strip()
+
+            if not transformation_type and transformation_logic:
+                upper_logic = transformation_logic.upper()
+                for candidate in ("GROUP_BY", "SUM", "COUNT", "AVG", "MEAN"):
+                    if upper_logic.startswith(candidate):
+                        transformation_type = candidate
+                        break
+
+            if transformation_type == "GROUP_BY":
+                selected_col = ""
+                for col in (target_col, source_col, _extract_logic_col(transformation_logic)):
+                    if col in frame.columns:
+                        selected_col = col
+                        break
+                if selected_col and selected_col not in group_cols:
+                    group_cols.append(selected_col)
+                continue
+
+            if transformation_type in agg_map:
+                agg_fn = agg_map[transformation_type]
+                selected_col = ""
+                for col in (source_col, target_col, _extract_logic_col(transformation_logic)):
+                    if col in frame.columns:
+                        selected_col = col
+                        break
+                if not selected_col:
+                    continue
+                output_col = target_col or f"{agg_fn}_{selected_col}"
+                agg_specs.append((output_col, selected_col, agg_fn))
+
+        return group_cols, agg_specs
+
     output_paths: list[str] = []
     GOLD_DIR.mkdir(parents=True, exist_ok=True)
+    sttm = pd.read_csv(sttm_path) if sttm_path and Path(sttm_path).exists() else pd.DataFrame()
 
     for path in silver_paths:
         frame = pd.read_parquet(path)
         table_name = Path(path).stem
 
-        group_cols = [
-            col
-            for col in ("category", "store_id", "region", "product_id")
-            if col in frame.columns
-        ]
-        numeric_cols = [col for col in ("quantity", "total_amount") if col in frame.columns]
+        file_rules = pd.DataFrame()
+        if not sttm.empty and "source_table" in sttm.columns:
+            file_rules = sttm[sttm["source_table"].astype(str) == table_name]
+            if file_rules.empty and "target_table" in sttm.columns:
+                file_rules = sttm[sttm["target_table"].astype(str) == table_name]
 
-        if group_cols and numeric_cols:
-            agg = frame.groupby(group_cols, as_index=False)[numeric_cols].sum()
+        group_cols, agg_specs = _build_sttm_plan(frame, file_rules)
+
+        if group_cols and agg_specs:
+            named_aggs = {out_col: (src_col, agg_fn) for out_col, src_col, agg_fn in agg_specs}
+            agg = frame.groupby(group_cols, dropna=False, as_index=False).agg(**named_aggs)
+        elif group_cols and not agg_specs:
+            agg = frame[group_cols].drop_duplicates().reset_index(drop=True)
+        elif agg_specs and not group_cols:
+            row: dict[str, object] = {}
+            for out_col, src_col, agg_fn in agg_specs:
+                value = frame[src_col].count() if agg_fn == "count" else frame[src_col].agg(agg_fn)
+                row[out_col] = value
+            agg = pd.DataFrame([row])
         else:
-            agg = frame.copy()
+            default_group_cols = [
+                col
+                for col in ("category", "store_id", "region", "product_id")
+                if col in frame.columns
+            ]
+            default_numeric_cols = [col for col in ("quantity", "total_amount") if col in frame.columns]
+            if default_group_cols and default_numeric_cols:
+                agg = frame.groupby(default_group_cols, as_index=False)[default_numeric_cols].sum()
+            else:
+                agg = frame.copy()
 
         pk_col = "pk_gold_id"
         agg.insert(0, pk_col, [str(uuid.uuid4()) for _ in range(len(agg))])

@@ -42,3 +42,59 @@ def test_apply_gold_rules_aggregates_and_adds_surrogate_key(tmp_path, monkeypatc
     electronics_row = out_frame[out_frame["category"] == "Electronics"].iloc[0]
     assert electronics_row["quantity"] == 3
     assert electronics_row["total_amount"] == 300.0
+
+
+def test_apply_gold_rules_uses_sttm_group_and_aggregation_definitions(tmp_path, monkeypatch):
+    gold_dir = tmp_path / "gold_layer"
+    monkeypatch.setattr("agents.gold_agent.GOLD_DIR", gold_dir)
+
+    silver_file = _write_silver_parquet(tmp_path, "sales_silver")
+    sttm_path = tmp_path / "gold_sttm.csv"
+    sttm = pd.DataFrame(
+        [
+            {
+                "source_schema": "silver",
+                "source_table": "sales_silver",
+                "source_column": "store_id",
+                "target_schema": "gold",
+                "target_table": "sales_gold",
+                "target_column": "store_id",
+                "transformation_type": "GROUP_BY",
+                "transformation_logic": "GROUP_BY(store_id)",
+            },
+            {
+                "source_schema": "silver",
+                "source_table": "sales_silver",
+                "source_column": "quantity",
+                "target_schema": "gold",
+                "target_table": "sales_gold",
+                "target_column": "units_sold",
+                "transformation_type": "SUM",
+                "transformation_logic": "SUM(quantity)",
+            },
+            {
+                "source_schema": "silver",
+                "source_table": "sales_silver",
+                "source_column": "quantity",
+                "target_schema": "gold",
+                "target_table": "sales_gold",
+                "target_column": "txn_count",
+                "transformation_type": "COUNT",
+                "transformation_logic": "COUNT(quantity)",
+            },
+        ]
+    )
+    sttm.to_csv(sttm_path, index=False)
+
+    output_paths = _apply_gold_rules([silver_file], str(sttm_path), "run-2")
+    out_frame = pd.read_parquet(output_paths[0])
+
+    assert "pk_gold_id" in out_frame.columns
+    assert "store_id" in out_frame.columns
+    assert "units_sold" in out_frame.columns
+    assert "txn_count" in out_frame.columns
+    assert len(out_frame) == 2
+
+    s01 = out_frame[out_frame["store_id"] == "S01"].iloc[0]
+    assert s01["units_sold"] == 3
+    assert s01["txn_count"] == 2

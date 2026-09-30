@@ -89,11 +89,28 @@ python -m app.main --env dev --file data/bronze/your_file.csv
 streamlit run streamlit_app.py
 ```
 
+Or use:
+
+```powershell
+make ui-original
+```
+
 ## Running IDAMP
 
 ```powershell
 streamlit run app/streamlit_app.py
 ```
+
+Or use:
+
+```powershell
+make ui-idamp
+```
+
+### Streamlit Entry Points
+
+- `streamlit_app.py` (repo root): original deterministic pipeline UI.
+- `app/streamlit_app.py`: IDAMP HITL/agentic pipeline UI.
 
 1. **Phase 1 — Upload & Intent**: upload CSVs (or use the bundled sample data in `data/landing/`) and type a business question, e.g. *"Which category had the highest sales?"*.
 2. **Phase 2 — Bronze STTM**: review/edit the LLM-generated Bronze mapping rules, then approve.

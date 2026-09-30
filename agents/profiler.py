@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -82,6 +83,61 @@ def _make_llm():
     return make_llm()
 
 
+def _extract_semantic_annotations(messages: list) -> dict[str, object]:
+    default_payload: dict[str, object] = {
+        "semantic_meanings": {},
+        "join_keys": [],
+        "quality_notes": [],
+    }
+
+    for message in reversed(messages):
+        content = getattr(message, "content", "")
+        if not isinstance(content, str):
+            continue
+
+        text = content.strip()
+        if not text:
+            continue
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"):
+                text = text[4:]
+            text = text.strip()
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{[\s\S]*\}", text)
+            if not match:
+                continue
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                continue
+
+        if not isinstance(parsed, dict):
+            continue
+
+        semantic_meanings = parsed.get("semantic_meanings", {})
+        join_keys = parsed.get("join_keys", [])
+        quality_notes = parsed.get("quality_notes", [])
+
+        if not isinstance(semantic_meanings, dict):
+            semantic_meanings = {}
+        if not isinstance(join_keys, list):
+            join_keys = []
+        if not isinstance(quality_notes, list):
+            quality_notes = [str(quality_notes)] if quality_notes else []
+
+        return {
+            "semantic_meanings": semantic_meanings,
+            "join_keys": join_keys,
+            "quality_notes": quality_notes,
+        }
+
+    return default_payload
+
+
 def profile_dataset(file_path: str, run_id: str, task_description: str) -> str:
     return profile_multiple_datasets([file_path], run_id, task_description)
 
@@ -107,10 +163,12 @@ def profile_multiple_datasets(file_paths: list[str], run_id: str, task_descripti
         )
         messages = result.get("messages", [])
         trace.extract_from_messages(messages)
+        semantic = _extract_semantic_annotations(messages)
 
         combined = {
             "inspect": _inspect_files(file_paths),
             "stats": _compute_stats(file_paths),
+            "semantic": semantic,
         }
         timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
         out_file = PROFILES_DIR / f"profile_combined_{timestamp}.json"

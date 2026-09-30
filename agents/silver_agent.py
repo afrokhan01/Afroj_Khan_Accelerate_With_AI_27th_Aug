@@ -32,39 +32,128 @@ def _inspect_bronze(bronze_paths: list[str], sttm_path: str) -> dict:
 
 
 def _apply_silver_rules(bronze_paths: list[str], sttm_path: str, run_id: str) -> list[str]:
-    sttm = pd.read_csv(sttm_path) if sttm_path and Path(sttm_path).exists() else pd.DataFrame()
-    output_paths: list[str] = []
+	def _norm(value: object) -> str:
+		return str(value).strip().upper() if pd.notna(value) else ""
 
-    for path in bronze_paths:
-        frame = pd.read_parquet(path)
-        table_name = Path(path).stem
+	def _target_column(frame: pd.DataFrame, source_col: str, target_col: str) -> str:
+		if target_col in frame.columns:
+			return target_col
+		if source_col in frame.columns:
+			return source_col
+		return ""
 
-        if not sttm.empty:
-            file_rules = sttm[sttm["source_table"].astype(str) == table_name]
-            rename_map = {
-                row["source_column"]: row["target_column"]
-                for _, row in file_rules.iterrows()
-                if pd.notna(row.get("source_column")) and pd.notna(row.get("target_column"))
-            }
-            if rename_map:
-                frame = frame.rename(columns=rename_map)
+	def _fill_with_logic(series: pd.Series, logic: str) -> pd.Series:
+		text = (logic or "").strip()
+		upper = text.upper()
 
-        frame = frame.drop_duplicates()
-        for col in frame.columns:
-            if pd.api.types.is_numeric_dtype(frame[col]):
-                frame[col] = frame[col].fillna(frame[col].median())
-            else:
-                frame[col] = frame[col].fillna("Unknown")
+		if upper.startswith("VALUE:"):
+			raw = text.split(":", 1)[1].strip()
+			if raw.upper() in {"NULL", "NONE"}:
+				value = None
+			elif raw.replace(".", "", 1).isdigit() or (
+				raw.startswith("-") and raw[1:].replace(".", "", 1).isdigit()
+			):
+				value = float(raw) if "." in raw else int(raw)
+			else:
+				value = raw
+			return series.fillna(value)
 
-        pk_col = f"pk_{table_name}_silver_id"
-        frame.insert(0, pk_col, [str(uuid.uuid4()) for _ in range(len(frame))])
+		if upper in {"MEDIAN", "FILL_MEDIAN"} and pd.api.types.is_numeric_dtype(series):
+			return series.fillna(series.median())
+		if upper in {"MEAN", "FILL_MEAN"} and pd.api.types.is_numeric_dtype(series):
+			return series.fillna(series.mean())
+		if upper in {"MODE", "FILL_MODE"}:
+			mode = series.mode(dropna=True)
+			return series.fillna(mode.iloc[0] if not mode.empty else "Unknown")
+		if upper in {"ZERO", "0", "FILL_ZERO"}:
+			return series.fillna(0)
+		if upper in {"UNKNOWN", "FILL_UNKNOWN"}:
+			return series.fillna("Unknown")
+		if upper in {"FFILL", "FORWARD_FILL"}:
+			return series.ffill()
+		if upper in {"BFILL", "BACKWARD_FILL"}:
+			return series.bfill()
 
-        SILVER_DIR.mkdir(parents=True, exist_ok=True)
-        out_file = SILVER_DIR / f"{table_name}_silver.parquet"
-        frame.to_parquet(out_file, index=False)
-        output_paths.append(str(out_file))
+		if pd.api.types.is_numeric_dtype(series):
+			return series.fillna(series.median())
+		return series.fillna("Unknown")
 
-    return output_paths
+	sttm = pd.read_csv(sttm_path) if sttm_path and Path(sttm_path).exists() else pd.DataFrame()
+	output_paths: list[str] = []
+
+	for path in bronze_paths:
+		frame = pd.read_parquet(path)
+		table_name = Path(path).stem
+
+		file_rules = pd.DataFrame()
+		if not sttm.empty:
+			file_rules = sttm[sttm["source_table"].astype(str) == table_name]
+			if file_rules.empty and "target_table" in sttm.columns:
+				file_rules = sttm[sttm["target_table"].astype(str) == table_name]
+
+		if not file_rules.empty:
+			rename_map = {
+				row["source_column"]: row["target_column"]
+				for _, row in file_rules.iterrows()
+				if pd.notna(row.get("source_column")) and pd.notna(row.get("target_column"))
+			}
+			if rename_map:
+				frame = frame.rename(columns=rename_map)
+
+		dedup_subsets: list[str] = []
+		fill_null_columns: set[str] = set()
+		date_columns: set[str] = set()
+
+		if not file_rules.empty:
+			for _, row in file_rules.iterrows():
+				transformation_type = _norm(row.get("transformation_type"))
+				transformation_logic = str(row.get("transformation_logic", "") or "").strip()
+				source_col = str(row.get("source_column", "") or "").strip()
+				target_col = str(row.get("target_column", "") or "").strip()
+				selected_col = _target_column(frame, source_col, target_col)
+
+				if transformation_type == "DATE_FORMAT" and selected_col:
+					frame[selected_col] = frame[selected_col].map(parse_date)
+					date_columns.add(selected_col)
+				elif transformation_type in {"NUMERIC_CAST", "TO_NUMERIC", "CAST_NUMERIC"} and selected_col:
+					frame[selected_col] = frame[selected_col].map(parse_numeric)
+				elif transformation_type == "TEXT_NORMALIZE" and selected_col:
+					frame[selected_col] = frame[selected_col].astype("string").str.strip().str.lower()
+				elif transformation_type == "FILL_NULL" and selected_col:
+					frame[selected_col] = _fill_with_logic(frame[selected_col], transformation_logic)
+					fill_null_columns.add(selected_col)
+				elif transformation_type == "DEDUP":
+					if selected_col:
+						dedup_subsets.append(selected_col)
+					elif transformation_logic:
+						for col_name in [c.strip() for c in transformation_logic.split(",") if c.strip()]:
+							if col_name in frame.columns:
+								dedup_subsets.append(col_name)
+
+		if dedup_subsets:
+			frame = frame.drop_duplicates(subset=list(dict.fromkeys(dedup_subsets)))
+		else:
+			frame = frame.drop_duplicates()
+
+		for col in frame.columns:
+			if col in fill_null_columns:
+				continue
+			if pd.api.types.is_datetime64_any_dtype(frame[col]) or col in date_columns:
+				continue
+			if pd.api.types.is_numeric_dtype(frame[col]):
+				frame[col] = frame[col].fillna(frame[col].median())
+			else:
+				frame[col] = frame[col].fillna("Unknown")
+
+		pk_col = f"pk_{table_name}_silver_id"
+		frame.insert(0, pk_col, [str(uuid.uuid4()) for _ in range(len(frame))])
+
+		SILVER_DIR.mkdir(parents=True, exist_ok=True)
+		out_file = SILVER_DIR / f"{table_name}_silver.parquet"
+		frame.to_parquet(out_file, index=False)
+		output_paths.append(str(out_file))
+
+	return output_paths
 
 
 def _make_silver_tools(bronze_paths: list[str], sttm_path: str, run_id: str) -> list:

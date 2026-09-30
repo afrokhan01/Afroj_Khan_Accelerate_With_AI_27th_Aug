@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+from types import SimpleNamespace
 
-from agents.profiler import _compute_stats, _inspect_files
+from agents.profiler import _compute_stats, _extract_semantic_annotations, _inspect_files
 
 
 def _write_csv(tmp_path, name: str) -> str:
@@ -46,3 +47,28 @@ def test_compute_stats_handles_multiple_files(tmp_path):
     result = _compute_stats([file1, file2])
 
     assert set(result.keys()) == {file1, file2}
+
+
+def test_extract_semantic_annotations_parses_json_payload():
+    messages = [
+        SimpleNamespace(content="intermediate thought"),
+        SimpleNamespace(
+            content='{"semantic_meanings":{"amount":"transaction value"},"join_keys":["store_id"],"quality_notes":["amount has no nulls"]}'
+        ),
+    ]
+
+    result = _extract_semantic_annotations(messages)
+
+    assert result["semantic_meanings"]["amount"] == "transaction value"
+    assert result["join_keys"] == ["store_id"]
+    assert result["quality_notes"] == ["amount has no nulls"]
+
+
+def test_extract_semantic_annotations_returns_defaults_when_missing():
+    messages = [SimpleNamespace(content="not-json")]
+
+    result = _extract_semantic_annotations(messages)
+
+    assert result["semantic_meanings"] == {}
+    assert result["join_keys"] == []
+    assert result["quality_notes"] == []

@@ -9,3 +9,9 @@ run:
 
 ui:
 	streamlit run streamlit_app.py
+
+ui-idamp:
+	streamlit run app/streamlit_app.py
+
+ui-original:
+	streamlit run streamlit_app.py
